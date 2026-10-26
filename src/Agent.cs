@@ -9,7 +9,7 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-namespace AccountSwap
+namespace OmniDesk
 {
     // Per-session helper: watches Ctrl+Win+Left/Right, swaps accounts when pressed past the last/first
     // virtual desktop, and applies the optional "nearest end desktop" arrival after an unlock.
@@ -27,7 +27,7 @@ namespace AccountSwap
         const uint KEYEVENTF_EXTENDEDKEY = 0x1;
         const uint KEYEVENTF_KEYUP = 0x2;
 
-        const string SettingsKey = @"Software\AccountSwap";
+        const string SettingsKey = @"Software\OmniDesk";
         const string DesktopsKey = @"Software\Microsoft\Windows\CurrentVersion\Explorer\VirtualDesktops";
 
         static readonly TimeSpan ArrivalTtl = TimeSpan.FromSeconds(60);
@@ -38,7 +38,7 @@ namespace AccountSwap
             get
             {
                 return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "AccountSwap", "agent.log");
+                    "OmniDesk", "agent.log");
             }
         }
 
@@ -51,7 +51,7 @@ namespace AccountSwap
         {
             _debug = debug;
             bool created;
-            using (var mutex = new Mutex(true, @"Local\AccountSwapAgent", out created))
+            using (var mutex = new Mutex(true, @"Local\OmniDeskAgent", out created))
             {
                 if (!created) return 0;
                 Application.EnableVisualStyles();
@@ -85,8 +85,8 @@ namespace AccountSwap
             menu.Items.Add("Quit", null, delegate { Close(); });
 
             _tray = new NotifyIcon();
-            _tray.Icon = SystemIcons.Application;
-            _tray.Text = "Account Swap";
+            _tray.Icon = LoadTrayIcon();
+            _tray.Text = "OmniDesk";
             _tray.ContextMenuStrip = menu;
             _tray.Visible = true;
 
@@ -94,6 +94,17 @@ namespace AccountSwap
             _hook = Native.SetWindowsHookEx(WH_KEYBOARD_LL, _proc,
                 Native.GetModuleHandle(Process.GetCurrentProcess().MainModule.ModuleName), 0);
             Log("agent started in session " + Process.GetCurrentProcess().SessionId + ", hook " + _hook);
+        }
+
+        static Icon LoadTrayIcon()
+        {
+            try
+            {
+                using (Stream s = System.Reflection.Assembly.GetExecutingAssembly().GetManifestResourceStream("OmniDesk.ico"))
+                    if (s != null) return new Icon(s, SystemInformation.SmallIconSize);
+            }
+            catch { }
+            return SystemIcons.Application;
         }
 
         protected override void SetVisibleCore(bool value)

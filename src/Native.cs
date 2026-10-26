@@ -5,7 +5,7 @@ using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
 
-namespace AccountSwap
+namespace OmniDesk
 {
     static class Native
     {
@@ -169,10 +169,10 @@ namespace AccountSwap
 
     static class Shared
     {
-        public const string PipeName = "AccountSwapPipe";
+        public const string PipeName = "OmniDeskPipe";
 
         public static readonly string DataDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "AccountSwap");
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "OmniDesk");
 
         public static string ArrivalFile(int sessionId)
         {

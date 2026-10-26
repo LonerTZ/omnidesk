@@ -1,7 +1,7 @@
 using System;
 using System.ServiceProcess;
 
-namespace AccountSwap
+namespace OmniDesk
 {
     static class Program
     {
@@ -22,7 +22,7 @@ namespace AccountSwap
                     PrintSessions();
                     return 0;
                 default:
-                    Console.WriteLine("AccountSwap.exe [--agent | --debug | --service | --sessions]");
+                    Console.WriteLine("OmniDesk.exe [--agent | --debug | --service | --sessions]");
                     return 1;
             }
         }

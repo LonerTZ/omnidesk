@@ -1,4 +1,6 @@
-# Account Swap
+<p align="center"><img src="assets/icon.png" alt="OmniDesk icon" width="128"></p>
+
+# OmniDesk
 
 Switch between Windows user accounts the same way you switch virtual desktops.
 
@@ -10,7 +12,7 @@ Press **Ctrl+Win+Right** on your last virtual desktop and you slide over to the 
 
 Windows already lets several accounts stay signed in at once ("Fast User Switching"), each with its own apps, windows and virtual desktops. The catch is getting between them: lock the screen, pick the other user from the corner of the sign-in screen, then wait.
 
-Account Swap treats your signed-in accounts as extra desktops sitting past either end of your virtual desktops:
+OmniDesk treats your signed-in accounts as extra desktops sitting past either end of your virtual desktops:
 
 ```
  [ Account A: desk 1 | desk 2 | desk 3 ]  ->  [ Account B: desk 1 | desk 2 ]  ->  (back to A)
@@ -37,11 +39,13 @@ Right-click the tray icon to turn this on. When you cross into an account, it th
 
 ## Install
 
-1. Download `AccountSwapSetup.exe` from the [latest release](../../releases/latest).
+1. Download `OmniDeskSetup.exe` from the [latest release](../../releases/latest).
 2. Double-click it, approve the admin prompt and click **Yes**.
 3. Sign out and back in once on every account you want to use it with. After that it starts by itself at each sign-in. (The account that ran the installer starts straight away.)
 
-**Update:** run the new installer again. **Uninstall:** Settings, Apps, Installed apps, Account Swap. Silent versions: `AccountSwapSetup.exe /quiet` and `"%ProgramFiles%\AccountSwap\Uninstall.exe" /uninstall /quiet`.
+**Coming from "Account Swap" (v1.0.0)?** The app was renamed. Running the OmniDesk installer removes the old install first, so you don't need to uninstall it yourself. Your "Land on nearest end desktop" choice resets to off.
+
+**Update:** run the new installer again. **Uninstall:** Settings, Apps, Installed apps, OmniDesk. Silent versions: `OmniDeskSetup.exe /quiet` and `"%ProgramFiles%\OmniDesk\Uninstall.exe" /uninstall /quiet`.
 
 Each account that should be reachable needs to be signed in already, and the hotkey only works in accounts where the app is running. It needs Windows 11 (built and developed on 11 Pro); the registry layout it reads for virtual desktops may differ on other versions.
 
@@ -53,11 +57,11 @@ Needs only the C# compiler that ships with Windows (`csc.exe`, .NET Framework 4.
 .\build.ps1
 ```
 
-This produces `bin\AccountSwap.exe` (the app) and `bin\AccountSwapSetup.exe` (the installer, with the app embedded).
+This produces `bin\OmniDesk.exe` (the app) and `bin\OmniDeskSetup.exe` (the installer, with the app embedded).
 
 ## How it works
 
-One executable, `AccountSwap.exe`, runs in two roles. A tiny installer wraps it.
+One executable, `OmniDesk.exe`, runs in two roles. A tiny installer wraps it.
 
 ```
  Account A (console)                      SYSTEM                         Account B
@@ -76,7 +80,7 @@ One executable, `AccountSwap.exe`, runs in two roles. A tiny installer wraps it.
 - **Pass-through.** If you are not at the edge, the key is left alone and Windows switches desktops as normal. At the edge, the key press and its auto-repeats are swallowed and a swap is requested.
 - **Start-menu guard.** Swallowing the arrow key while Win is held would make Windows open the Start menu when Win is released, so the agent injects a harmless unassigned key press (`VK 0xE8`) to cancel that. Injected input is flagged and ignored by the agent's own hook.
 - **Locking behind you.** When the service accepts the request, the agent calls `LockWorkStation`, so the session you leave is never left open on the console.
-- **Tray and settings.** A tray icon holds the arrival toggle, stored per account at `HKCU\Software\AccountSwap\ArrivalNearestEnd`.
+- **Tray and settings.** A tray icon holds the arrival toggle, stored per account at `HKCU\Software\OmniDesk\ArrivalNearestEnd`.
 
 ### Service (one per machine, runs as SYSTEM)
 
@@ -84,19 +88,19 @@ One executable, `AccountSwap.exe`, runs in two roles. A tiny installer wraps it.
 - **Console only.** The pipe client's session id (`GetNamedPipeClientSessionId`) must equal the active console session. A remote desktop session therefore cannot move the physical screen.
 - **The swap.** The target session is connected to the console with `WTSConnectSession(target, console, "", false)`, the same operation as `tscon <id> /dest:console`. Doing it from SYSTEM is what allows a session to be shown without supplying its password, which is why a service is needed. If the API call fails, the service falls back to running `tscon.exe`. The call is delayed 500 ms so the agent has time to lock its own session first.
 - **Rate limit.** Requests closer than 1.5 s apart are refused so a held key cannot make it bounce between accounts.
-- **IPC.** A named pipe (`\\.\pipe\AccountSwapPipe`) accessible to authenticated users and SYSTEM. The protocol is one line in (`SWAP +1` or `SWAP -1`) and one line out (`OK <session>`, `NONE`, `BUSY`, `DENIED` or `ERR`).
+- **IPC.** A named pipe (`\\.\pipe\OmniDeskPipe`) accessible to authenticated users and SYSTEM. The protocol is one line in (`SWAP +1` or `SWAP -1`) and one line out (`OK <session>`, `NONE`, `BUSY`, `DENIED` or `ERR`).
 
 ### Arrival hand-off
 
-Before swapping, the service writes a short note to `%ProgramData%\AccountSwap\arrival-<session>.txt` holding the direction and a UTC timestamp. When the target account's agent sees a session-unlock notification (`WTS_SESSION_UNLOCK` through `WTSRegisterSessionNotification`), it reads and deletes the note. If the note is under 60 seconds old and the account has "Land on nearest end desktop" enabled, it sends the right number of synthetic Ctrl+Win+Left/Right presses (computed from the registry desktop list) to reach the first or last desktop. Stale notes are ignored.
+Before swapping, the service writes a short note to `%ProgramData%\OmniDesk\arrival-<session>.txt` holding the direction and a UTC timestamp. When the target account's agent sees a session-unlock notification (`WTS_SESSION_UNLOCK` through `WTSRegisterSessionNotification`), it reads and deletes the note. If the note is under 60 seconds old and the account has "Land on nearest end desktop" enabled, it sends the right number of synthetic Ctrl+Win+Left/Right presses (computed from the registry desktop list) to reach the first or last desktop. Stale notes are ignored.
 
 ### Installer
 
-`AccountSwapSetup.exe` carries `AccountSwap.exe` as an embedded resource and requests administrator rights through its manifest. It writes the files to `%ProgramFiles%\AccountSwap`, creates and starts the `AccountSwapSvc` auto-start service (restart-on-failure), adds an `HKLM\...\Run` entry so every account's agent starts at sign-in, and registers an uninstall entry for Installed apps. A copy of itself becomes `Uninstall.exe`.
+`OmniDeskSetup.exe` carries `OmniDesk.exe` as an embedded resource and requests administrator rights through its manifest. It writes the files to `%ProgramFiles%\OmniDesk`, creates and starts the `OmniDeskSvc` auto-start service (restart-on-failure), adds an `HKLM\...\Run` entry so every account's agent starts at sign-in, and registers an uninstall entry for Installed apps. A copy of itself becomes `Uninstall.exe`.
 
 ### Security notes
 
-- The swap only ever lands on a target's lock screen. Account Swap never types, stores or bypasses a password.
+- The swap only ever lands on a target's lock screen. OmniDesk never types, stores or bypasses a password.
 - The service accepts requests only from the console session and acts only on existing sessions.
 - If a session was left **unlocked** while disconnected (for example by closing a remote desktop connection), swapping to it shows it as it was, with no lock screen in between. Sessions this app leaves are locked first.
 - Any local user can write the arrival note for a session. The worst effect is that a session's virtual desktop moves.
@@ -118,7 +122,7 @@ setup/Setup.cs       Self-contained installer and uninstaller
 CONTEXT.md           Glossary of the project's terms
 ```
 
-Run modes of `AccountSwap.exe`: `--agent` (default), `--debug` (agent with a log at `%LOCALAPPDATA%\AccountSwap\agent.log`), `--service`, and `--sessions` (prints the live session ring).
+Run modes of `OmniDesk.exe`: `--agent` (default), `--debug` (agent with a log at `%LOCALAPPDATA%\OmniDesk\agent.log`), `--service`, and `--sessions` (prints the live session ring).
 
 ## License
 

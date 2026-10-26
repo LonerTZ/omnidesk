@@ -9,7 +9,7 @@ using System.ServiceProcess;
 using System.Text;
 using System.Threading;
 
-namespace AccountSwap
+namespace OmniDesk
 {
     // Runs as LocalSystem. Agents ask it to swap the console to the next/previous live session.
     class SwapService : ServiceBase
@@ -23,7 +23,7 @@ namespace AccountSwap
 
         public SwapService()
         {
-            ServiceName = "AccountSwapSvc";
+            ServiceName = "OmniDeskSvc";
             CanStop = true;
         }
 

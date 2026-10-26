@@ -1,4 +1,4 @@
-# Account Swap
+# OmniDesk
 
 Lets a person move between the Windows accounts they are signed in to using the same Ctrl+Win+Left/Right keys they use to move between virtual desktops.
 

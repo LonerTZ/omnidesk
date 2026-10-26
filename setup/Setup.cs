@@ -8,24 +8,24 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-namespace AccountSwapSetup
+namespace OmniDeskSetup
 {
-    // Self-contained installer: carries AccountSwap.exe as an embedded resource.
+    // Self-contained installer: carries OmniDesk.exe as an embedded resource.
     // Double-click to install or update; "Uninstall.exe" (a copy of itself) removes everything.
     static class Setup
     {
-        const string Product = "Account Swap";
+        const string Product = "OmniDesk";
         const string Version = "1.0.0";
-        const string ServiceName = "AccountSwapSvc";
+        const string ServiceName = "OmniDeskSvc";
         const string RunKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
-        const string UninstallKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\AccountSwap";
+        const string UninstallKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\OmniDesk";
 
         static string InstallDir
         {
-            get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "AccountSwap"); }
+            get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "OmniDesk"); }
         }
 
-        static string AppExe { get { return Path.Combine(InstallDir, "AccountSwap.exe"); } }
+        static string AppExe { get { return Path.Combine(InstallDir, "OmniDesk.exe"); } }
         static string UninstallExe { get { return Path.Combine(InstallDir, "Uninstall.exe"); } }
 
         static bool _quiet;
@@ -76,10 +76,11 @@ namespace AccountSwapSetup
 
         static void Install()
         {
+            RemoveLegacyInstall();
             StopEverything();
 
             Directory.CreateDirectory(InstallDir);
-            using (Stream src = Assembly.GetExecutingAssembly().GetManifestResourceStream("AccountSwap.exe"))
+            using (Stream src = Assembly.GetExecutingAssembly().GetManifestResourceStream("OmniDesk.exe"))
             using (FileStream dst = new FileStream(AppExe, FileMode.Create, FileAccess.Write))
             {
                 if (src == null) throw new InvalidOperationException("Installer is missing its payload.");
@@ -98,13 +99,13 @@ namespace AccountSwapSetup
             Sc("failure " + ServiceName + " reset= 86400 actions= restart/5000/restart/5000/restart/5000", out output);
 
             using (RegistryKey run = Registry.LocalMachine.CreateSubKey(RunKey))
-                run.SetValue("AccountSwapAgent", "\"" + AppExe + "\" --agent");
+                run.SetValue("OmniDeskAgent", "\"" + AppExe + "\" --agent");
 
             using (RegistryKey k = Registry.LocalMachine.CreateSubKey(UninstallKey))
             {
                 k.SetValue("DisplayName", Product);
                 k.SetValue("DisplayVersion", Version);
-                k.SetValue("Publisher", "Account Swap");
+                k.SetValue("Publisher", "OmniDesk");
                 k.SetValue("InstallLocation", InstallDir);
                 k.SetValue("DisplayIcon", AppExe);
                 k.SetValue("UninstallString", "\"" + UninstallExe + "\" /uninstall");
@@ -145,12 +146,12 @@ namespace AccountSwapSetup
             StopEverything();
             RemoveService();
 
-            try { using (RegistryKey run = Registry.LocalMachine.OpenSubKey(RunKey, true)) { if (run != null) run.DeleteValue("AccountSwapAgent", false); } } catch { }
+            try { using (RegistryKey run = Registry.LocalMachine.OpenSubKey(RunKey, true)) { if (run != null) run.DeleteValue("OmniDeskAgent", false); } } catch { }
             try { Registry.LocalMachine.DeleteSubKeyTree(UninstallKey, false); } catch { }
 
             try
             {
-                string data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "AccountSwap");
+                string data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "OmniDesk");
                 if (Directory.Exists(data)) Directory.Delete(data, true);
             }
             catch { }
@@ -165,6 +166,46 @@ namespace AccountSwapSetup
                     CreateNoWindow = true
                 };
                 Process.Start(psi);
+            }
+            catch { }
+        }
+
+        // The app was first released as "Account Swap". Remove that install so the two never run side by side.
+        static void RemoveLegacyInstall()
+        {
+            const string legacyService = "AccountSwapSvc";
+            string output;
+            try
+            {
+                using (ServiceController sc = new ServiceController(legacyService))
+                {
+                    if (sc.Status != ServiceControllerStatus.Stopped)
+                    {
+                        sc.Stop();
+                        sc.WaitForStatus(ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(15));
+                    }
+                }
+                Sc("delete " + legacyService, out output);
+            }
+            catch (InvalidOperationException) { } // not installed
+
+            foreach (Process p in Process.GetProcessesByName("AccountSwap"))
+            {
+                try { p.Kill(); p.WaitForExit(3000); } catch { }
+            }
+
+            try { using (RegistryKey run = Registry.LocalMachine.OpenSubKey(RunKey, true)) { if (run != null) run.DeleteValue("AccountSwapAgent", false); } } catch { }
+            try { Registry.LocalMachine.DeleteSubKeyTree(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\AccountSwap", false); } catch { }
+            try
+            {
+                string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "AccountSwap");
+                if (Directory.Exists(dir)) Directory.Delete(dir, true);
+            }
+            catch { }
+            try
+            {
+                string data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "AccountSwap");
+                if (Directory.Exists(data)) Directory.Delete(data, true);
             }
             catch { }
         }
@@ -186,7 +227,7 @@ namespace AccountSwapSetup
             }
             catch (InvalidOperationException) { } // service not installed
 
-            foreach (Process p in Process.GetProcessesByName("AccountSwap"))
+            foreach (Process p in Process.GetProcessesByName("OmniDesk"))
             {
                 try { p.Kill(); p.WaitForExit(3000); } catch { }
             }
