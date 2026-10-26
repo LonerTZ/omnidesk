@@ -1,0 +1,4 @@
+bin/
+obj/
+graphify-out/
+*.log
