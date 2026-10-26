@@ -15,7 +15,7 @@ namespace OmniDeskSetup
     static class Setup
     {
         const string Product = "OmniDesk";
-        const string Version = "1.0.0";
+        const string Version = "1.1.1";
         const string ServiceName = "OmniDeskSvc";
         const string RunKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
         const string UninstallKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\OmniDesk";
@@ -77,9 +77,13 @@ namespace OmniDeskSetup
         static void Install()
         {
             RemoveLegacyInstall();
-            StopEverything();
+
+            // Only the service is stopped. Agents already running in other accounts are left alone:
+            // their exe is renamed out of the way, and the new service replaces them with current ones.
+            StopService();
 
             Directory.CreateDirectory(InstallDir);
+            SetAsideRunningExe();
             using (Stream src = Assembly.GetExecutingAssembly().GetManifestResourceStream("OmniDesk.exe"))
             using (FileStream dst = new FileStream(AppExe, FileMode.Create, FileAccess.Write))
             {
@@ -214,6 +218,31 @@ namespace OmniDeskSetup
 
         static void StopEverything()
         {
+            StopService();
+            KillAgents();
+        }
+
+        // A running exe can be renamed but not overwritten. Rename it, and tidy up older leftovers.
+        static void SetAsideRunningExe()
+        {
+            foreach (string old in Directory.GetFiles(InstallDir, "OmniDesk.exe.*.old"))
+            {
+                try { File.Delete(old); } catch { } // still in use by an agent that has not been replaced yet
+            }
+            if (File.Exists(AppExe))
+                File.Move(AppExe, AppExe + "." + DateTime.UtcNow.Ticks + ".old");
+        }
+
+        static void KillAgents()
+        {
+            foreach (Process p in Process.GetProcessesByName("OmniDesk"))
+            {
+                try { p.Kill(); p.WaitForExit(3000); } catch { }
+            }
+        }
+
+        static void StopService()
+        {
             try
             {
                 using (ServiceController sc = new ServiceController(ServiceName))
@@ -226,11 +255,6 @@ namespace OmniDeskSetup
                 }
             }
             catch (InvalidOperationException) { } // service not installed
-
-            foreach (Process p in Process.GetProcessesByName("OmniDesk"))
-            {
-                try { p.Kill(); p.WaitForExit(3000); } catch { }
-            }
         }
 
         static void RemoveService()

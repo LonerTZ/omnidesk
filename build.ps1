@@ -7,7 +7,7 @@ New-Item -ItemType Directory -Force $out | Out-Null
 & $csc /nologo /target:winexe /platform:x64 /optimize+ /out:"$out\OmniDesk.exe" `
     /win32icon:"$root\assets\omnidesk.ico" /resource:"$root\assets\omnidesk.ico,OmniDesk.ico" `
     /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.ServiceProcess.dll `
-    "$root\src\Native.cs" "$root\src\SwapService.cs" "$root\src\Agent.cs" "$root\src\Program.cs"
+    "$root\src\Native.cs" "$root\src\SwapService.cs" "$root\src\Supervisor.cs" "$root\src\Agent.cs" "$root\src\Program.cs"
 if ($LASTEXITCODE -ne 0) { throw "build failed" }
 
 # The installer embeds OmniDesk.exe, so it is built second.

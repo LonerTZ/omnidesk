@@ -106,6 +106,55 @@ namespace OmniDesk
         [DllImport("user32.dll")]
         public static extern short GetAsyncKeyState(int vKey);
 
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        public struct STARTUPINFO
+        {
+            public int cb;
+            public string lpReserved;
+            public string lpDesktop;
+            public string lpTitle;
+            public int dwX;
+            public int dwY;
+            public int dwXSize;
+            public int dwYSize;
+            public int dwXCountChars;
+            public int dwYCountChars;
+            public int dwFillAttribute;
+            public int dwFlags;
+            public short wShowWindow;
+            public short cbReserved2;
+            public IntPtr lpReserved2;
+            public IntPtr hStdInput;
+            public IntPtr hStdOutput;
+            public IntPtr hStdError;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct PROCESS_INFORMATION
+        {
+            public IntPtr hProcess;
+            public IntPtr hThread;
+            public int dwProcessId;
+            public int dwThreadId;
+        }
+
+        [DllImport("wtsapi32.dll", SetLastError = true)]
+        public static extern bool WTSQueryUserToken(uint sessionId, out IntPtr token);
+
+        [DllImport("userenv.dll", SetLastError = true)]
+        public static extern bool CreateEnvironmentBlock(out IntPtr environment, IntPtr token, bool inherit);
+
+        [DllImport("userenv.dll", SetLastError = true)]
+        public static extern bool DestroyEnvironmentBlock(IntPtr environment);
+
+        [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        public static extern bool CreateProcessAsUser(IntPtr token, string applicationName, string commandLine,
+            IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint creationFlags,
+            IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool CloseHandle(IntPtr handle);
+
         [DllImport("user32.dll", SetLastError = true)]
         public static extern uint SendInput(uint count, INPUT[] inputs, int size);
 
@@ -177,6 +226,12 @@ namespace OmniDesk
         public static string ArrivalFile(int sessionId)
         {
             return Path.Combine(DataDir, "arrival-" + sessionId + ".txt");
+        }
+
+        // Dropped by an agent whose user chose Quit, so the service does not restart it.
+        public static string QuitFile(int sessionId)
+        {
+            return Path.Combine(DataDir, "quit-" + sessionId + ".txt");
         }
 
         // Service-side: any local user may drop/read their own session's arrival note.

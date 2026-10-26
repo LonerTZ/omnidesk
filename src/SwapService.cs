@@ -18,6 +18,7 @@ namespace OmniDesk
         static readonly TimeSpan MinGap = TimeSpan.FromMilliseconds(1500);
 
         Thread _thread;
+        Supervisor _supervisor;
         volatile bool _stop;
         DateTime _lastSwap = DateTime.MinValue;
 
@@ -30,14 +31,21 @@ namespace OmniDesk
         protected override void OnStart(string[] args)
         {
             Shared.EnsureDataDir();
+            AppDomain.CurrentDomain.UnhandledException += delegate(object s, UnhandledExceptionEventArgs e)
+            {
+                Shared.Log(LogPath, "unhandled exception: " + e.ExceptionObject);
+            };
             Shared.Log(LogPath, "service started");
             _thread = new Thread(Loop) { IsBackground = true };
             _thread.Start();
+            _supervisor = new Supervisor();
+            _supervisor.Start();
         }
 
         protected override void OnStop()
         {
             _stop = true;
+            if (_supervisor != null) _supervisor.Stop();
             try
             {
                 using (var c = new NamedPipeClientStream(".", Shared.PipeName, PipeDirection.InOut))

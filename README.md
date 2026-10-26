@@ -41,7 +41,7 @@ Right-click the tray icon to turn this on. When you cross into an account, it th
 
 1. Download `OmniDeskSetup.exe` from the [latest release](../../releases/latest).
 2. Double-click it, approve the admin prompt and click **Yes**.
-3. Sign out and back in once on every account you want to use it with. After that it starts by itself at each sign-in. (The account that ran the installer starts straight away.)
+3. That's it. Within a few seconds the service starts OmniDesk in every account that is already signed in, and in any account that signs in later.
 
 **Coming from "Account Swap" (v1.0.0)?** The app was renamed. Running the OmniDesk installer removes the old install first, so you don't need to uninstall it yourself. Your "Land on nearest end desktop" choice resets to off.
 
@@ -94,9 +94,21 @@ One executable, `OmniDesk.exe`, runs in two roles. A tiny installer wraps it.
 
 Before swapping, the service writes a short note to `%ProgramData%\OmniDesk\arrival-<session>.txt` holding the direction and a UTC timestamp. When the target account's agent sees a session-unlock notification (`WTS_SESSION_UNLOCK` through `WTSRegisterSessionNotification`), it reads and deletes the note. If the note is under 60 seconds old and the account has "Land on nearest end desktop" enabled, it sends the right number of synthetic Ctrl+Win+Left/Right presses (computed from the registry desktop list) to reach the first or last desktop. Stale notes are ignored.
 
+### Supervisor (inside the service)
+
+Every few seconds the service checks each live session and starts an agent in any that has none. It starts the agent in that user's own session with their normal, non-elevated token (`WTSQueryUserToken` and `CreateProcessAsUser`), and only once that session has a desktop shell running. It also:
+
+- retries no more than once every 20 seconds per session, so an agent that cannot start does not loop;
+- leaves a session alone if its user chose Quit from the tray menu (the agent leaves a marker file that is cleared when the session signs out);
+- stops any agent still running from an older install folder copy, so after an update every account moves to the new version within seconds without signing out.
+
+### Keeping the key hook alive
+
+Windows removes a low-level keyboard hook, with no error, if its callback is ever too slow. The agent keeps the callback minimal (it reads two integers and returns for every key except Left and Right), warms up the registry and marshalling code at start, runs at above-normal priority, and re-installs the hook every minute and after each unlock or console reconnect. Exceptions are caught inside the callback so a failure passes the key through instead of ending the process. The agent writes lifecycle events and errors to `%LOCALAPPDATA%\OmniDesk\agent.log` (per-key detail only with `--debug`), and the service logs to `%ProgramData%\OmniDesk\service.log`.
+
 ### Installer
 
-`OmniDeskSetup.exe` carries `OmniDesk.exe` as an embedded resource and requests administrator rights through its manifest. It writes the files to `%ProgramFiles%\OmniDesk`, creates and starts the `OmniDeskSvc` auto-start service (restart-on-failure), adds an `HKLM\...\Run` entry so every account's agent starts at sign-in, and registers an uninstall entry for Installed apps. A copy of itself becomes `Uninstall.exe`.
+`OmniDeskSetup.exe` carries `OmniDesk.exe` as an embedded resource and requests administrator rights through its manifest. It writes the files to `%ProgramFiles%\OmniDesk`, creates and starts the `OmniDeskSvc` auto-start service (restart-on-failure), adds an `HKLM\...\Run` entry so every account's agent starts at sign-in, and registers an uninstall entry for Installed apps. A copy of itself becomes `Uninstall.exe`. On an update it stops only the service, renames the running `OmniDesk.exe` aside (a running exe can be renamed but not overwritten) and writes the new one; the new service then replaces the agents that are still running the old copy.
 
 ### Security notes
 
@@ -108,7 +120,7 @@ Before swapping, the service writes a short note to `%ProgramData%\OmniDesk\arri
 ### Known limitations
 
 - Windows only, written against Windows 11. The virtual-desktop registry layout is undocumented and may change.
-- Both ends need the agent running, so every account has to be signed in once after installing.
+- Both ends need the agent running. The service starts and restarts it for you, except in an account where you chose Quit from the tray menu; that account stays quiet until it signs out and in.
 - Accounts can only be swapped to if they are already signed in; signing in still needs the normal Windows sign-in screen.
 
 ## Project layout
@@ -116,6 +128,7 @@ Before swapping, the service writes a short note to `%ProgramData%\OmniDesk\arri
 ```
 src/Native.cs        Win32 declarations, session listing, shared helpers
 src/SwapService.cs   SYSTEM service: pipe server, session ring, swap
+src/Supervisor.cs    Service-side: keeps an agent running in every session
 src/Agent.cs         Per-account agent: key hook, edge check, tray, arrival
 src/Program.cs       Entry point and run modes
 setup/Setup.cs       Self-contained installer and uninstaller

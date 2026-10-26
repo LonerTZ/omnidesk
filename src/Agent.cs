@@ -27,6 +27,8 @@ namespace OmniDesk
         const uint KEYEVENTF_EXTENDEDKEY = 0x1;
         const uint KEYEVENTF_KEYUP = 0x2;
 
+        const int WTS_CONSOLE_CONNECT = 0x1;
+
         const string SettingsKey = @"Software\OmniDesk";
         const string DesktopsKey = @"Software\Microsoft\Windows\CurrentVersion\Explorer\VirtualDesktops";
 
@@ -42,9 +44,16 @@ namespace OmniDesk
             }
         }
 
+        // Per-key detail, only with --debug.
         static void Log(string line)
         {
             if (_debug) Shared.Log(LogPath, line);
+        }
+
+        // Lifecycle and failures, always kept so a stopped agent leaves a trace.
+        static void LogAlways(string line)
+        {
+            Shared.Log(LogPath, line);
         }
 
         public static int Run(bool debug)
@@ -54,8 +63,23 @@ namespace OmniDesk
             using (var mutex = new Mutex(true, @"Local\OmniDeskAgent", out created))
             {
                 if (!created) return 0;
+
+                Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+                Application.ThreadException += delegate(object s, System.Threading.ThreadExceptionEventArgs e)
+                {
+                    LogAlways("ui thread exception: " + e.Exception);
+                };
+                AppDomain.CurrentDomain.UnhandledException += delegate(object s, UnhandledExceptionEventArgs e)
+                {
+                    LogAlways("unhandled exception: " + e.ExceptionObject);
+                };
+
+                // A starved hook callback is silently dropped by Windows, so give this process a little headroom.
+                try { Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.AboveNormal; } catch { }
+
                 Application.EnableVisualStyles();
                 Application.Run(new Agent());
+                LogAlways("agent exited");
             }
             return 0;
         }
@@ -64,6 +88,7 @@ namespace OmniDesk
         IntPtr _hook = IntPtr.Zero;
         NotifyIcon _tray;
         ToolStripMenuItem _arrivalItem;
+        System.Windows.Forms.Timer _watchdog;
         bool _heldLeft, _heldRight;
         long _swallowedAt;
 
@@ -82,7 +107,7 @@ namespace OmniDesk
             var menu = new ContextMenuStrip();
             menu.Items.Add(_arrivalItem);
             menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add("Quit", null, delegate { Close(); });
+            menu.Items.Add("Quit", null, delegate { Quit(); });
 
             _tray = new NotifyIcon();
             _tray.Icon = LoadTrayIcon();
@@ -91,9 +116,20 @@ namespace OmniDesk
             _tray.Visible = true;
 
             _proc = Hook;
-            _hook = Native.SetWindowsHookEx(WH_KEYBOARD_LL, _proc,
-                Native.GetModuleHandle(Process.GetCurrentProcess().MainModule.ModuleName), 0);
-            Log("agent started in session " + Process.GetCurrentProcess().SessionId + ", hook " + _hook);
+            InstallHook();
+
+            // Warm up the registry and marshalling code so the first real key press is not slow.
+            int i, c;
+            Desktops(out i, out c);
+
+            // Windows drops a keyboard hook without telling anyone if it ever answers too slowly,
+            // so put it back regularly instead of trusting that it is still there.
+            _watchdog = new System.Windows.Forms.Timer();
+            _watchdog.Interval = 60 * 1000;
+            _watchdog.Tick += delegate { InstallHook(); };
+            _watchdog.Start();
+
+            LogAlways("agent started in session " + Process.GetCurrentProcess().SessionId);
         }
 
         static Icon LoadTrayIcon()
@@ -105,6 +141,24 @@ namespace OmniDesk
             }
             catch { }
             return SystemIcons.Application;
+        }
+
+        void InstallHook()
+        {
+            if (_hook != IntPtr.Zero) Native.UnhookWindowsHookEx(_hook);
+            _hook = Native.SetWindowsHookEx(WH_KEYBOARD_LL, _proc,
+                Native.GetModuleHandle(Process.GetCurrentProcess().MainModule.ModuleName), 0);
+            if (_hook == IntPtr.Zero)
+                LogAlways("could not install keyboard hook (error " + Marshal.GetLastWin32Error() + ")");
+            else
+                Log("keyboard hook installed");
+        }
+
+        void Quit()
+        {
+            // Tell the service this was deliberate so it does not start the agent again.
+            try { File.WriteAllText(Shared.QuitFile(Process.GetCurrentProcess().SessionId), "quit"); } catch { }
+            Close();
         }
 
         protected override void SetVisibleCore(bool value)
@@ -120,6 +174,7 @@ namespace OmniDesk
 
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
+            if (_watchdog != null) _watchdog.Stop();
             if (_hook != IntPtr.Zero) Native.UnhookWindowsHookEx(_hook);
             Native.WTSUnRegisterSessionNotification(Handle);
             _tray.Visible = false;
@@ -128,10 +183,15 @@ namespace OmniDesk
 
         protected override void WndProc(ref Message m)
         {
-            if (m.Msg == Native.WM_WTSSESSION_CHANGE && m.WParam.ToInt32() == Native.WTS_SESSION_UNLOCK)
+            if (m.Msg == Native.WM_WTSSESSION_CHANGE)
             {
-                _heldLeft = _heldRight = false;
-                OnUnlock();
+                int what = m.WParam.ToInt32();
+                if (what == Native.WTS_SESSION_UNLOCK || what == WTS_CONSOLE_CONNECT)
+                {
+                    _heldLeft = _heldRight = false;
+                    InstallHook();
+                }
+                if (what == Native.WTS_SESSION_UNLOCK) OnUnlock();
             }
             base.WndProc(ref m);
         }
@@ -202,42 +262,56 @@ namespace OmniDesk
             return (Native.GetAsyncKeyState(vk) & 0x8000) != 0;
         }
 
+        // Runs for every key on the machine, so it must stay quick and must never throw.
         IntPtr Hook(int code, IntPtr wParam, IntPtr lParam)
         {
             if (code >= 0)
             {
-                var k = (Native.KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(Native.KBDLLHOOKSTRUCT));
-                bool injected = (k.flags & LLKHF_INJECTED) != 0;
-                int msg = wParam.ToInt32();
-                bool down = msg == 0x100 || msg == 0x104;
-                bool up = msg == 0x101 || msg == 0x105;
-
-                if (!injected && (k.vkCode == VK_LEFT || k.vkCode == VK_RIGHT))
+                try
                 {
-                    int dir = k.vkCode == VK_RIGHT ? 1 : -1;
-                    bool held = dir > 0 ? _heldRight : _heldLeft;
-
-                    if (down && held && Stopwatch.GetTimestamp() - _swallowedAt < Stopwatch.Frequency)
-                        return (IntPtr)1; // auto-repeat of a press we already swallowed
-
-                    if (down && IsDown(VK_CONTROL) && (IsDown(VK_LWIN) || IsDown(VK_RWIN)) && AtEdge(dir))
+                    int vk = Marshal.ReadInt32(lParam, 0);       // KBDLLHOOKSTRUCT.vkCode
+                    if (vk == VK_LEFT || vk == VK_RIGHT)
                     {
-                        if (dir > 0) _heldRight = true; else _heldLeft = true;
-                        _swallowedAt = Stopwatch.GetTimestamp();
-                        Log("edge hit, dir " + dir);
-                        SendMask();
-                        ThreadPool.QueueUserWorkItem(delegate { Swap(dir); });
-                        return (IntPtr)1;
+                        uint flags = (uint)Marshal.ReadInt32(lParam, 8); // KBDLLHOOKSTRUCT.flags
+                        if ((flags & LLKHF_INJECTED) == 0 && HandleArrow(vk, wParam.ToInt32()))
+                            return (IntPtr)1;
                     }
-
-                    if (up && held)
-                    {
-                        if (dir > 0) _heldRight = false; else _heldLeft = false;
-                        return (IntPtr)1;
-                    }
+                }
+                catch (Exception e)
+                {
+                    LogAlways("hook error: " + e.Message);
                 }
             }
             return Native.CallNextHookEx(_hook, code, wParam, lParam);
+        }
+
+        // Returns true when the key should be swallowed.
+        bool HandleArrow(int vk, int msg)
+        {
+            bool down = msg == 0x100 || msg == 0x104;
+            bool up = msg == 0x101 || msg == 0x105;
+            int dir = vk == VK_RIGHT ? 1 : -1;
+            bool held = dir > 0 ? _heldRight : _heldLeft;
+
+            if (down && held && Stopwatch.GetTimestamp() - _swallowedAt < Stopwatch.Frequency)
+                return true; // auto-repeat of a press we already swallowed
+
+            if (down && IsDown(VK_CONTROL) && (IsDown(VK_LWIN) || IsDown(VK_RWIN)) && AtEdge(dir))
+            {
+                if (dir > 0) _heldRight = true; else _heldLeft = true;
+                _swallowedAt = Stopwatch.GetTimestamp();
+                Log("edge hit, dir " + dir);
+                SendMask();
+                ThreadPool.QueueUserWorkItem(delegate { Swap(dir); });
+                return true;
+            }
+
+            if (up && held)
+            {
+                if (dir > 0) _heldRight = false; else _heldLeft = false;
+                return true;
+            }
+            return false;
         }
 
         static void Swap(int dir)
@@ -259,7 +333,7 @@ namespace OmniDesk
             }
             catch (Exception e)
             {
-                Log("swap request failed: " + e.Message);
+                LogAlways("swap request failed: " + e.Message);
             }
         }
 
@@ -294,11 +368,18 @@ namespace OmniDesk
             Log("arrival: dir " + dir + ", desktop " + index + "/" + count + ", " + presses + " presses");
             ThreadPool.QueueUserWorkItem(delegate
             {
-                Thread.Sleep(800); // let the shell settle after unlock
-                for (int i = 0; i < presses; i++)
+                try
                 {
-                    SendCombo(arrow);
-                    Thread.Sleep(250);
+                    Thread.Sleep(800); // let the shell settle after unlock
+                    for (int i = 0; i < presses; i++)
+                    {
+                        SendCombo(arrow);
+                        Thread.Sleep(250);
+                    }
+                }
+                catch (Exception e)
+                {
+                    LogAlways("arrival failed: " + e.Message);
                 }
             });
         }

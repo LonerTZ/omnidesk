@@ -33,5 +33,5 @@ The per-Session helper that watches the keys, detects the Edge, and applies Arri
 _Avoid_: Client, tray app
 
 **Service**:
-The privileged helper that performs the Swap on behalf of an Agent.
+The privileged helper that performs the Swap on behalf of an Agent, and keeps an Agent running in every Session.
 _Avoid_: Daemon, backend
