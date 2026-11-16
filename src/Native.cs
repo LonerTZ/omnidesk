@@ -155,6 +155,12 @@ namespace OmniDesk
         [DllImport("kernel32.dll", SetLastError = true)]
         public static extern bool CloseHandle(IntPtr handle);
 
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern IntPtr OpenProcess(int access, bool inherit, int processId);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern bool QueryFullProcessImageName(IntPtr process, int flags, System.Text.StringBuilder name, ref int size);
+
         [DllImport("user32.dll", SetLastError = true)]
         public static extern uint SendInput(uint count, INPUT[] inputs, int size);
 

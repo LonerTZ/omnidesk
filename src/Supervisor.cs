@@ -43,7 +43,8 @@ namespace OmniDesk
 
         void Tick()
         {
-            string appExe = Process.GetCurrentProcess().MainModule.FileName;
+            string appExe = ImagePath(Process.GetCurrentProcess().Id);
+            if (appExe == null) return;
 
             // Which sessions already have an agent, and which have a desktop shell up.
             var hasAgent = new HashSet<int>();
@@ -88,14 +89,27 @@ namespace OmniDesk
 
         static bool IsStale(Process p, string appExe)
         {
+            string path = ImagePath(p.Id);
+            if (path == null) return false; // cannot tell, so leave it alone
+            return !string.Equals(path, appExe, StringComparison.OrdinalIgnoreCase);
+        }
+
+        // The file a running process was started from, as it is named now. Process.MainModule keeps
+        // the original path after the file is renamed, which is exactly what an update does.
+        static string ImagePath(int processId)
+        {
+            const int PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+            IntPtr h = Native.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, processId);
+            if (h == IntPtr.Zero) return null;
             try
             {
-                string path = p.MainModule.FileName;
-                return !string.Equals(path, appExe, StringComparison.OrdinalIgnoreCase);
+                var sb = new System.Text.StringBuilder(1024);
+                int size = sb.Capacity;
+                return Native.QueryFullProcessImageName(h, 0, sb, ref size) ? sb.ToString() : null;
             }
-            catch
+            finally
             {
-                return false; // cannot tell, so leave it alone
+                Native.CloseHandle(h);
             }
         }
 
