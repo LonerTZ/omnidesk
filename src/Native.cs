@@ -166,6 +166,12 @@ namespace OmniDesk
 
         [DllImport("user32.dll")]
         public static extern bool LockWorkStation();
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
+
+        [DllImport("user32.dll")]
+        public static extern bool SetProcessDPIAware();
     }
 
     class SessionInfo

@@ -77,6 +77,15 @@ namespace OmniDesk
                 // A starved hook callback is silently dropped by Windows, so give this process a little headroom.
                 try { Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.AboveNormal; } catch { }
 
+                // Without this Windows scales the coordinates this process sees on high-DPI monitors, and windows
+                // placed by the multi-monitor modes would land in the wrong spot. Must come before any window exists.
+                try
+                {
+                    if (!Native.SetProcessDpiAwarenessContext(new IntPtr(-4))) // per-monitor v2
+                        Native.SetProcessDPIAware();
+                }
+                catch { try { Native.SetProcessDPIAware(); } catch { } }
+
                 Application.EnableVisualStyles();
                 Application.Run(new Agent());
                 LogAlways("agent exited");
@@ -88,6 +97,8 @@ namespace OmniDesk
         IntPtr _hook = IntPtr.Zero;
         NotifyIcon _tray;
         ToolStripMenuItem _arrivalItem;
+        ToolStripMenuItem _modeMenu, _modeOff, _modeIndependent, _modePaired;
+        PairedMode _paired;
         System.Windows.Forms.Timer _watchdog;
         bool _heldLeft, _heldRight;
         long _swallowedAt;
@@ -104,7 +115,15 @@ namespace OmniDesk
             _arrivalItem.Checked = NearestEnd;
             _arrivalItem.CheckedChanged += delegate { NearestEnd = _arrivalItem.Checked; };
 
+            _modeOff = new ToolStripMenuItem("Off", null, delegate { SetMode(MODE_OFF); });
+            _modeIndependent = new ToolStripMenuItem("Independent (coming soon)");
+            _modeIndependent.Enabled = false;
+            _modePaired = new ToolStripMenuItem("Paired", null, delegate { SetMode(MODE_PAIRED); });
+            _modeMenu = new ToolStripMenuItem("Multi-monitor desktops");
+            _modeMenu.DropDownItems.AddRange(new ToolStripItem[] { _modeOff, _modeIndependent, _modePaired });
+
             var menu = new ContextMenuStrip();
+            menu.Items.Add(_modeMenu);
             menu.Items.Add(_arrivalItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Quit", null, delegate { Quit(); });
@@ -114,6 +133,14 @@ namespace OmniDesk
             _tray.Text = "OmniDesk";
             _tray.ContextMenuStrip = menu;
             _tray.Visible = true;
+
+            // The window handle is needed now so the engine can post messages back to the UI thread.
+            IntPtr unused = Handle;
+
+            _paired = new PairedMode(LogAlways, delegate(string text) { BeginInvoke(new Action(delegate { Notice(text); })); });
+            ApplyMode(MultiMonitorMode, false);
+            SystemEvents.DisplaySettingsChanged += OnDisplayChanged;
+            OnDisplayChanged(null, EventArgs.Empty);
 
             _proc = Hook;
             InstallHook();
@@ -154,6 +181,70 @@ namespace OmniDesk
                 Log("keyboard hook installed");
         }
 
+        // ---- multi-monitor mode ----
+
+        const int MODE_OFF = 0;
+        const int MODE_PAIRED = 2;
+
+        static int MultiMonitorMode
+        {
+            get
+            {
+                try
+                {
+                    using (RegistryKey k = Registry.CurrentUser.OpenSubKey(SettingsKey))
+                        return k == null ? MODE_OFF : Convert.ToInt32(k.GetValue("MultiMonitorMode", MODE_OFF));
+                }
+                catch { return MODE_OFF; }
+            }
+            set
+            {
+                try
+                {
+                    using (RegistryKey k = Registry.CurrentUser.CreateSubKey(SettingsKey))
+                        k.SetValue("MultiMonitorMode", value, RegistryValueKind.DWord);
+                }
+                catch { }
+            }
+        }
+
+        void SetMode(int mode)
+        {
+            if (mode == MODE_PAIRED && !_paired.Available)
+            {
+                Notice("Paired desktops can't run on this version of Windows, so it stays off.");
+                mode = MODE_OFF;
+            }
+            MultiMonitorMode = mode;
+            ApplyMode(mode, true);
+        }
+
+        void ApplyMode(int mode, bool announce)
+        {
+            _modeOff.Checked = mode == MODE_OFF;
+            _modePaired.Checked = mode == MODE_PAIRED;
+            _paired.SetWanted(mode == MODE_PAIRED);
+            if (announce) LogAlways("multi-monitor mode set to " + mode);
+        }
+
+        // Called by the engine when it had to refuse or stop; mirror that in the menu and tell the user.
+        void Notice(string text)
+        {
+            LogAlways("notice: " + text);
+            if (!_paired.Active && MultiMonitorMode == MODE_PAIRED)
+            {
+                MultiMonitorMode = MODE_OFF;
+                ApplyMode(MODE_OFF, false);
+            }
+            try { _tray.ShowBalloonTip(6000, "OmniDesk", text, ToolTipIcon.Warning); } catch { }
+        }
+
+        // The mode only makes sense with two or more monitors, so hide the menu otherwise.
+        void OnDisplayChanged(object sender, EventArgs e)
+        {
+            _modeMenu.Visible = Screen.AllScreens.Length >= 2;
+        }
+
         void Quit()
         {
             // Tell the service this was deliberate so it does not start the agent again.
@@ -175,6 +266,8 @@ namespace OmniDesk
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
             if (_watchdog != null) _watchdog.Stop();
+            SystemEvents.DisplaySettingsChanged -= OnDisplayChanged;
+            if (_paired != null) _paired.Shutdown(); // send borrowed windows back to their own desktops
             if (_hook != IntPtr.Zero) Native.UnhookWindowsHookEx(_hook);
             Native.WTSUnRegisterSessionNotification(Handle);
             _tray.Visible = false;
@@ -296,14 +389,22 @@ namespace OmniDesk
             if (down && held && Stopwatch.GetTimestamp() - _swallowedAt < Stopwatch.Frequency)
                 return true; // auto-repeat of a press we already swallowed
 
-            if (down && IsDown(VK_CONTROL) && (IsDown(VK_LWIN) || IsDown(VK_RWIN)) && AtEdge(dir))
+            if (down && IsDown(VK_CONTROL) && (IsDown(VK_LWIN) || IsDown(VK_RWIN)))
             {
-                if (dir > 0) _heldRight = true; else _heldLeft = true;
-                _swallowedAt = Stopwatch.GetTimestamp();
-                Log("edge hit, dir " + dir);
-                SendMask();
-                ThreadPool.QueueUserWorkItem(delegate { Swap(dir); });
-                return true;
+                // In paired mode every press is ours: it moves the pair, or swaps accounts past the last/first pair.
+                bool paired = _paired != null && _paired.Active;
+                bool edge = paired ? (dir > 0 ? _paired.AtRightEdge : _paired.AtLeftEdge) : AtEdge(dir);
+
+                if (paired || edge)
+                {
+                    if (dir > 0) _heldRight = true; else _heldLeft = true;
+                    _swallowedAt = Stopwatch.GetTimestamp();
+                    Log((edge ? "edge hit" : "paired shift") + ", dir " + dir);
+                    SendMask();
+                    if (edge) ThreadPool.QueueUserWorkItem(delegate { Swap(dir); });
+                    else _paired.Shift(dir);
+                    return true;
+                }
             }
 
             if (up && held)
@@ -359,6 +460,13 @@ namespace OmniDesk
             if (!NearestEnd) return;
 
             int dir = parts[0] == "+1" ? 1 : -1;
+            if (_paired.Active)
+            {
+                // The pair is moved by the engine; pressing the arrow keys here would fight it.
+                _paired.Arrive(dir);
+                return;
+            }
+
             int index, count;
             if (!Desktops(out index, out count) || count < 2) return;
 

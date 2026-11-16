@@ -28,6 +28,14 @@ _Avoid_: Boundary, end desktop
 Which virtual desktop the target Session shows after a Swap. By default, wherever it was left; optionally the nearest Edge desktop in the direction travelled.
 _Avoid_: Landing, destination desktop
 
+**Paired Desktops**:
+A multi-monitor mode where neighbouring desktops are shown on neighbouring monitors, and one key press moves the whole view by one desktop.
+_Avoid_: Dual desktops, span mode
+
+**Stage**:
+The one real desktop that shows the whole view in Paired Desktops. The windows of the other desktops in view are borrowed onto it.
+_Avoid_: Host desktop, main desktop
+
 **Agent**:
 The per-Session helper that watches the keys, detects the Edge, and applies Arrival.
 _Avoid_: Client, tray app

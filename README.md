@@ -28,6 +28,18 @@ OmniDesk treats your signed-in accounts as extra desktops sitting past either en
 
 On by default. When you cross into an account, you arrive on that account's nearest end desktop (first desktop when you went right, last desktop when you went left), so all your accounts feel like one long row of desktops. Right-click the tray icon to turn it off; you then arrive wherever that account was last. An account that has already turned it off keeps that choice.
 
+### Paired desktops (two or more monitors)
+
+With more than one monitor connected, right-click the tray icon and choose **Multi-monitor desktops, Paired**. Windows normally shows the same virtual desktop on every monitor. In paired mode the monitors show neighbouring desktops instead: the left monitor shows desktop 1 and the right monitor shows desktop 2. Ctrl+Win+Right moves the whole view one desktop at a time (2 and 3, then 3 and 4...). Once the right monitor is on your last desktop, the next Ctrl+Win+Right swaps to the other account, and it lands on that account's first pair.
+
+Things to know:
+
+- **A desktop belongs to one monitor.** In paired mode the windows on a monitor belong to the desktop that monitor is showing. A window you drag to the other monitor joins that monitor's desktop.
+- **You need at least as many desktops as monitors.** Otherwise OmniDesk tells you and stays off.
+- **Turning it off** (or unplugging a monitor) sends every window back to its own desktop without moving it on screen. Plugging the monitor back in resumes it.
+- **Windows that can't be moved.** Programs running as administrator, minimised windows and windows pinned to all desktops are left alone.
+- **Independent mode** (each monitor switches on its own) is planned and shown greyed out in the menu.
+
 ## Use cases
 
 - **Work and personal on one PC.** Keep a work profile (work email, VPN, company apps) and a personal one signed in together, and flip between them without sign-out or session loss.
@@ -102,6 +114,17 @@ Every few seconds the service checks each live session and starts an agent in an
 - leaves a session alone if its user chose Quit from the tray menu (the agent leaves a marker file that is cleared when the session signs out);
 - stops any agent still running from an older install folder copy, so after an update every account moves to the new version within seconds without signing out.
 
+### Paired desktops, technically
+
+Windows can show only one real desktop at a time, and its public API cannot move a window that belongs to another program. So paired mode uses one real desktop as a **stage**, always the leftmost desktop of the pair, and Windows' undocumented virtual-desktop interfaces (`IVirtualDesktopManagerInternal`, `IApplicationViewCollection`) to move windows on and off it.
+
+- **Nothing is stored.** A window on the stage that sits on monitor *m* belongs to desktop *S+m*, where *S* is the stage. The agent rebuilds that from where windows physically are, so a crash or restart cannot lose state, and the service simply restarts the agent.
+- **Moving the view** from S to S' works in three steps: windows that belong in the new view are moved onto the new stage and placed on their monitor while that stage is still off screen; the desktop is switched; windows left behind on the old stage go back to their own desktops. If the switch fails, the moves are undone.
+- **Placement** keeps each window's size (shrunk to fit) and the relative position of its centre on the monitor, so monitors of different sizes work. Maximised windows are restored, moved and maximised again. The agent is made per-monitor DPI-aware first, otherwise Windows scales the coordinates it sees on scaled displays.
+- **Safety gate.** These interfaces change between Windows builds. At start-up the agent reads the desktop count, every desktop id and the current desktop through them and compares each with the registry; if anything differs, paired mode is unavailable and the menu says so. Only the first seven entries of the interface are used.
+- **Resync.** Every half second the engine checks for a changed monitor count, desktop count or a desktop switched from outside (Task View, a touchpad swipe) and rebuilds the view.
+- **Threading.** The engine runs on its own single-threaded apartment so the COM objects are used from one thread, and the key hook only reads two flags and queues a request.
+
 ### Keeping the key hook alive
 
 Windows removes a low-level keyboard hook, with no error, if its callback is ever too slow. The agent keeps the callback minimal (it reads two integers and returns for every key except Left and Right), warms up the registry and marshalling code at start, runs at above-normal priority, and re-installs the hook every minute and after each unlock or console reconnect. Exceptions are caught inside the callback so a failure passes the key through instead of ending the process. The agent writes lifecycle events and errors to `%LOCALAPPDATA%\OmniDesk\agent.log` (per-key detail only with `--debug`), and the service logs to `%ProgramData%\OmniDesk\service.log`.
@@ -130,6 +153,9 @@ src/Native.cs        Win32 declarations, session listing, shared helpers
 src/SwapService.cs   SYSTEM service: pipe server, session ring, swap
 src/Supervisor.cs    Service-side: keeps an agent running in every session
 src/Agent.cs         Per-account agent: key hook, edge check, tray, arrival
+src/PairedMode.cs    Paired-desktops engine (stage, moving the view)
+src/VirtualDesktops.cs  Wrapper over Windows' undocumented desktop interfaces, with the safety gate
+src/WinApi.cs        Window enumeration and placement
 src/Program.cs       Entry point and run modes
 setup/Setup.cs       Self-contained installer and uninstaller
 CONTEXT.md           Glossary of the project's terms
