@@ -99,6 +99,14 @@ namespace OmniDesk
         ToolStripMenuItem _arrivalItem;
         ToolStripMenuItem _modeMenu, _modeOff, _modeIndependent, _modePaired;
         PairedMode _paired;
+        ToolStripMenuItem _mouseItem;
+        readonly Native.HookProc _mouseProc;
+        IntPtr _mouseHook = IntPtr.Zero;
+        volatile bool _mouseOn;
+        int[] _mouseMap = new int[5];
+        readonly bool[] _mouseHeld = new bool[5];
+        long _tiltAt;
+        volatile Action<int> _detect;
         System.Windows.Forms.Timer _watchdog;
         bool _heldLeft, _heldRight;
         long _swallowedAt;
@@ -122,8 +130,16 @@ namespace OmniDesk
             _modeMenu = new ToolStripMenuItem("Multi-monitor desktops");
             _modeMenu.DropDownItems.AddRange(new ToolStripItem[] { _modeOff, _modeIndependent, _modePaired });
 
+            _mouseItem = new ToolStripMenuItem("Mouse buttons switch desktops");
+            _mouseItem.CheckOnClick = true;
+            _mouseItem.Checked = MouseSettings.Enabled;
+            _mouseItem.CheckedChanged += delegate { MouseSettings.Enabled = _mouseItem.Checked; LoadMouse(); };
+            var mouseChoose = new ToolStripMenuItem("Choose mouse buttons...", null, delegate { ChooseMouseButtons(); });
+
             var menu = new ContextMenuStrip();
             menu.Items.Add(_modeMenu);
+            menu.Items.Add(_mouseItem);
+            menu.Items.Add(mouseChoose);
             menu.Items.Add(_arrivalItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Quit", null, delegate { Quit(); });
@@ -144,6 +160,8 @@ namespace OmniDesk
 
             _proc = Hook;
             InstallHook();
+            _mouseProc = MouseHook;
+            LoadMouse();
 
             // Warm up the registry and marshalling code so the first real key press is not slow.
             int i, c;
@@ -153,7 +171,7 @@ namespace OmniDesk
             // so put it back regularly instead of trusting that it is still there.
             _watchdog = new System.Windows.Forms.Timer();
             _watchdog.Interval = 60 * 1000;
-            _watchdog.Tick += delegate { InstallHook(); };
+            _watchdog.Tick += delegate { InstallHook(); if (_mouseHook != IntPtr.Zero) InstallMouseHook(); };
             _watchdog.Start();
 
             LogAlways("agent started in session " + Process.GetCurrentProcess().SessionId);
@@ -179,6 +197,155 @@ namespace OmniDesk
                 LogAlways("could not install keyboard hook (error " + Marshal.GetLastWin32Error() + ")");
             else
                 Log("keyboard hook installed");
+        }
+
+        // ---- mouse buttons ----
+
+        const int WH_MOUSE_LL = 14;
+        const int WM_MBUTTONDOWN = 0x207, WM_MBUTTONUP = 0x208;
+        const int WM_XBUTTONDOWN = 0x20B, WM_XBUTTONUP = 0x20C;
+        const int WM_MOUSEHWHEEL = 0x20E;
+        const uint LLMHF_INJECTED = 0x1;
+
+        void LoadMouse()
+        {
+            _mouseMap = MouseSettings.LoadActions();
+            _mouseOn = MouseSettings.Enabled;
+            UpdateMouseHook();
+        }
+
+        // The mouse hook sees every mouse movement, so it is only installed while something needs it.
+        void UpdateMouseHook()
+        {
+            bool needed = (_mouseOn && MouseSettings.AnyMapped(_mouseMap)) || _detect != null;
+            if (needed) { if (_mouseHook == IntPtr.Zero) InstallMouseHook(); }
+            else RemoveMouseHook();
+        }
+
+        void InstallMouseHook()
+        {
+            RemoveMouseHook();
+            _mouseHook = Native.SetWindowsHookEx(WH_MOUSE_LL, _mouseProc,
+                Native.GetModuleHandle(Process.GetCurrentProcess().MainModule.ModuleName), 0);
+            if (_mouseHook == IntPtr.Zero)
+                LogAlways("could not install mouse hook (error " + Marshal.GetLastWin32Error() + ")");
+        }
+
+        void RemoveMouseHook()
+        {
+            if (_mouseHook != IntPtr.Zero) { Native.UnhookWindowsHookEx(_mouseHook); _mouseHook = IntPtr.Zero; }
+            for (int i = 0; i < _mouseHeld.Length; i++) _mouseHeld[i] = false;
+        }
+
+        IntPtr MouseHook(int code, IntPtr wParam, IntPtr lParam)
+        {
+            if (code >= 0)
+            {
+                int msg = wParam.ToInt32();
+                // Mouse movement is by far the most common message: leave it alone straight away.
+                if (msg == WM_MBUTTONDOWN || msg == WM_MBUTTONUP || msg == WM_XBUTTONDOWN || msg == WM_XBUTTONUP || msg == WM_MOUSEHWHEEL)
+                {
+                    try
+                    {
+                        uint flags = (uint)Marshal.ReadInt32(lParam, 12);   // MSLLHOOKSTRUCT.flags
+                        if ((flags & LLMHF_INJECTED) == 0)
+                        {
+                            int data = Marshal.ReadInt32(lParam, 8);        // MSLLHOOKSTRUCT.mouseData
+                            int id = -1;
+                            bool down = false, up = false;
+                            switch (msg)
+                            {
+                                case WM_MBUTTONDOWN: id = MouseSettings.Middle; down = true; break;
+                                case WM_MBUTTONUP: id = MouseSettings.Middle; up = true; break;
+                                case WM_XBUTTONDOWN: id = ((data >> 16) & 0xFFFF) == 1 ? MouseSettings.Side1 : MouseSettings.Side2; down = true; break;
+                                case WM_XBUTTONUP: id = ((data >> 16) & 0xFFFF) == 1 ? MouseSettings.Side1 : MouseSettings.Side2; up = true; break;
+                                case WM_MOUSEHWHEEL: id = (short)((data >> 16) & 0xFFFF) < 0 ? MouseSettings.TiltLeft : MouseSettings.TiltRight; down = true; break;
+                            }
+                            if (id >= 0 && HandleMouse(id, down, up, msg == WM_MOUSEHWHEEL))
+                                return (IntPtr)1;
+                        }
+                    }
+                    catch (Exception e)
+                    {
+                        LogAlways("mouse hook error: " + e.Message);
+                    }
+                }
+            }
+            return Native.CallNextHookEx(_mouseHook, code, wParam, lParam);
+        }
+
+        // Returns true when the event should be swallowed.
+        bool HandleMouse(int id, bool down, bool up, bool isTilt)
+        {
+            Action<int> detect = _detect;
+            if (detect != null && down)
+            {
+                // The settings window is waiting to be told which button this is.
+                _detect = null;
+                _mouseHeld[id] = !isTilt;
+                BeginInvoke(new Action(delegate { detect(id); UpdateMouseHook(); }));
+                return true;
+            }
+
+            if (up)
+            {
+                if (!_mouseHeld[id]) return false;
+                _mouseHeld[id] = false;
+                return true; // the matching press was swallowed
+            }
+
+            int action = _mouseMap[id];
+            if (!down || !_mouseOn || action == MouseSettings.None) return false;
+
+            if (isTilt)
+            {
+                // A tilt can arrive as several events; treat a burst as one.
+                long now = Stopwatch.GetTimestamp();
+                if (now - _tiltAt < Stopwatch.Frequency / 4) return true;
+                _tiltAt = now;
+            }
+            else
+            {
+                _mouseHeld[id] = true;
+            }
+
+            int dir = action == MouseSettings.Next ? 1 : -1;
+            ThreadPool.QueueUserWorkItem(delegate { SwitchBy(dir); });
+            return true;
+        }
+
+        // Same behaviour as Ctrl+Win+Left/Right: move the pair, swap accounts past the end, or just switch desktop.
+        void SwitchBy(int dir)
+        {
+            try
+            {
+                bool paired = _paired.Active;
+                bool edge = paired ? (dir > 0 ? _paired.AtRightEdge : _paired.AtLeftEdge) : AtEdge(dir);
+                Log("mouse switch, dir " + dir + (edge ? " (edge)" : "") + (paired ? " (paired)" : ""));
+
+                if (edge) Swap(dir);
+                else if (paired) _paired.Shift(dir);
+                else SendCombo(dir > 0 ? VK_RIGHT : VK_LEFT);
+            }
+            catch (Exception e)
+            {
+                LogAlways("mouse switch failed: " + e.Message);
+            }
+        }
+
+        void ChooseMouseButtons()
+        {
+            using (var form = new MouseSettingsForm(
+                MouseSettings.LoadActions(),
+                delegate(Action<int> found) { _detect = found; UpdateMouseHook(); },
+                delegate { _detect = null; UpdateMouseHook(); }))
+            {
+                if (form.ShowDialog() == DialogResult.OK)
+                {
+                    MouseSettings.SaveActions(form.Actions);
+                    LoadMouse();
+                }
+            }
         }
 
         // ---- multi-monitor mode ----
@@ -269,6 +436,7 @@ namespace OmniDesk
             SystemEvents.DisplaySettingsChanged -= OnDisplayChanged;
             if (_paired != null) _paired.Shutdown(); // send borrowed windows back to their own desktops
             if (_hook != IntPtr.Zero) Native.UnhookWindowsHookEx(_hook);
+            RemoveMouseHook();
             Native.WTSUnRegisterSessionNotification(Handle);
             _tray.Visible = false;
             base.OnFormClosed(e);
@@ -283,6 +451,7 @@ namespace OmniDesk
                 {
                     _heldLeft = _heldRight = false;
                     InstallHook();
+                    if (_mouseHook != IntPtr.Zero) InstallMouseHook();
                 }
                 if (what == Native.WTS_SESSION_UNLOCK) OnUnlock();
             }

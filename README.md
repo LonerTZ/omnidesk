@@ -40,6 +40,15 @@ Things to know:
 - **Windows that can't be moved.** Programs running as administrator, minimised windows and windows pinned to all desktops are left alone.
 - **Independent mode** (each monitor switches on its own) is planned and shown greyed out in the menu.
 
+### Mouse buttons
+
+Extra mouse buttons can switch desktops too. Right-click the tray icon:
+
+- **Mouse buttons switch desktops** turns the feature on or off. It is on by default, with the Back side button going to the previous desktop and the Forward side button to the next.
+- **Choose mouse buttons...** opens a window where each of five buttons (middle click, side button 1 and 2, wheel tilt left and right) can be set to *Previous desktop*, *Next desktop* or *Do nothing*. Press **Detect a button...** and then the button you mean, and the window tells you which one it is.
+
+A mapped button does exactly what Ctrl+Win+Left/Right does: it moves the paired view in paired mode, swaps accounts past your last or first desktop, and otherwise switches desktop. While a button is mapped, other apps no longer see it, so Back and Forward stop working in browsers; turn the checkbox off to get them back. Left and right click cannot be mapped. Buttons that only exist through a mouse maker's own software are not seen by Windows as mouse buttons; map those to the keyboard shortcut in that software and OmniDesk reacts to the keys.
+
 ## Use cases
 
 - **Work and personal on one PC.** Keep a work profile (work email, VPN, company apps) and a personal one signed in together, and flip between them without sign-out or session loss.
@@ -125,6 +134,10 @@ Windows can show only one real desktop at a time, and its public API cannot move
 - **Resync.** Every half second the engine checks for a changed monitor count, desktop count or a desktop switched from outside (Task View, a touchpad swipe) and rebuilds the view.
 - **Threading.** The engine runs on its own single-threaded apartment so the COM objects are used from one thread, and the key hook only reads two flags and queues a request.
 
+### Mouse buttons, technically
+
+A low-level mouse hook (`WH_MOUSE_LL`) reads the middle button, the two X buttons (side buttons, told apart by the high word of `mouseData`) and horizontal wheel movement (`WM_MOUSEHWHEEL`, the sign of the delta gives the direction). Because the hook is called for every mouse movement, it is installed only while the feature is on and at least one button is mapped (or the Detect helper is waiting), and its first act is to ignore everything except those five messages. A mapped press and its release are both swallowed, so applications never see half a click. A burst of wheel-tilt events within a quarter of a second counts as one. Events flagged as injected are ignored, so other tools' synthetic input cannot trigger it. The action runs on a worker thread through the same code as the keyboard shortcut path (edge check, swap, paired shift, or an injected Ctrl+Win+arrow). The mappings are stored per account under `HKCU\Software\OmniDesk` as `MouseEnabled`, `MouseMiddle`, `MouseSide1`, `MouseSide2`, `MouseTiltLeft` and `MouseTiltRight`, and the hook is re-installed with the keyboard hook every minute and after each unlock.
+
 ### Keeping the key hook alive
 
 Windows removes a low-level keyboard hook, with no error, if its callback is ever too slow. The agent keeps the callback minimal (it reads two integers and returns for every key except Left and Right), warms up the registry and marshalling code at start, runs at above-normal priority, and re-installs the hook every minute and after each unlock or console reconnect. Exceptions are caught inside the callback so a failure passes the key through instead of ending the process. The agent writes lifecycle events and errors to `%LOCALAPPDATA%\OmniDesk\agent.log` (per-key detail only with `--debug`), and the service logs to `%ProgramData%\OmniDesk\service.log`.
@@ -156,6 +169,7 @@ src/Agent.cs         Per-account agent: key hook, edge check, tray, arrival
 src/PairedMode.cs    Paired-desktops engine (stage, moving the view)
 src/VirtualDesktops.cs  Wrapper over Windows' undocumented desktop interfaces, with the safety gate
 src/WinApi.cs        Window enumeration and placement
+src/MouseSettings.cs Mouse-button mappings and the "Choose mouse buttons" window
 src/Program.cs       Entry point and run modes
 setup/Setup.cs       Self-contained installer and uninstaller
 CONTEXT.md           Glossary of the project's terms
