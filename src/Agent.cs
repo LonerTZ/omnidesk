@@ -205,9 +205,9 @@ namespace OmniDesk
                 try
                 {
                     using (RegistryKey k = Registry.CurrentUser.OpenSubKey(SettingsKey))
-                        return k != null && Convert.ToInt32(k.GetValue("ArrivalNearestEnd", 0)) != 0;
+                        return k == null || Convert.ToInt32(k.GetValue("ArrivalNearestEnd", 1)) != 0; // on unless the user turned it off
                 }
-                catch { return false; }
+                catch { return true; }
             }
             set
             {

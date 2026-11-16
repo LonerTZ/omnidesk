@@ -24,9 +24,9 @@ OmniDesk treats your signed-in accounts as extra desktops sitting past either en
 - Accounts that aren't signed in are skipped, so the keys only ever move between live sessions.
 - With a single signed-in account the extra keypress simply does nothing.
 
-### Optional: "Land on nearest end desktop"
+### "Land on nearest end desktop"
 
-Right-click the tray icon to turn this on. When you cross into an account, it then jumps to that account's nearest end desktop (first desktop when you went right, last desktop when you went left), so all your accounts feel like one long row of desktops. When it's off (the default) you arrive wherever that account was last.
+On by default. When you cross into an account, you arrive on that account's nearest end desktop (first desktop when you went right, last desktop when you went left), so all your accounts feel like one long row of desktops. Right-click the tray icon to turn it off; you then arrive wherever that account was last. An account that has already turned it off keeps that choice.
 
 ## Use cases
 
@@ -43,7 +43,7 @@ Right-click the tray icon to turn this on. When you cross into an account, it th
 2. Double-click it, approve the admin prompt and click **Yes**.
 3. That's it. Within a few seconds the service starts OmniDesk in every account that is already signed in, and in any account that signs in later.
 
-**Coming from "Account Swap" (v1.0.0)?** The app was renamed. Running the OmniDesk installer removes the old install first, so you don't need to uninstall it yourself. Your "Land on nearest end desktop" choice resets to off.
+**Coming from "Account Swap" (v1.0.0)?** The app was renamed. Running the OmniDesk installer removes the old install first, so you don't need to uninstall it yourself. Your "Land on nearest end desktop" choice resets to the default (on).
 
 **Update:** run the new installer again. **Uninstall:** Settings, Apps, Installed apps, OmniDesk. Silent versions: `OmniDeskSetup.exe /quiet` and `"%ProgramFiles%\OmniDesk\Uninstall.exe" /uninstall /quiet`.
 
@@ -80,7 +80,7 @@ One executable, `OmniDesk.exe`, runs in two roles. A tiny installer wraps it.
 - **Pass-through.** If you are not at the edge, the key is left alone and Windows switches desktops as normal. At the edge, the key press and its auto-repeats are swallowed and a swap is requested.
 - **Start-menu guard.** Swallowing the arrow key while Win is held would make Windows open the Start menu when Win is released, so the agent injects a harmless unassigned key press (`VK 0xE8`) to cancel that. Injected input is flagged and ignored by the agent's own hook.
 - **Locking behind you.** When the service accepts the request, the agent calls `LockWorkStation`, so the session you leave is never left open on the console.
-- **Tray and settings.** A tray icon holds the arrival toggle, stored per account at `HKCU\Software\OmniDesk\ArrivalNearestEnd`.
+- **Tray and settings.** A tray icon holds the arrival toggle, stored per account at `HKCU\Software\OmniDesk\ArrivalNearestEnd` (treated as on when the value is missing).
 
 ### Service (one per machine, runs as SYSTEM)
 
