@@ -28,18 +28,6 @@ OmniDesk treats your signed-in accounts as extra desktops sitting past either en
 
 On by default. When you cross into an account, you arrive on that account's nearest end desktop (first desktop when you went right, last desktop when you went left), so all your accounts feel like one long row of desktops. Right-click the tray icon to turn it off; you then arrive wherever that account was last. An account that has already turned it off keeps that choice.
 
-### Paired desktops (two or more monitors)
-
-With more than one monitor connected, right-click the tray icon and choose **Multi-monitor desktops, Paired**. Windows normally shows the same virtual desktop on every monitor. In paired mode the monitors show neighbouring desktops instead: the left monitor shows desktop 1 and the right monitor shows desktop 2. Ctrl+Win+Right moves the whole view one desktop at a time (2 and 3, then 3 and 4...). Once the right monitor is on your last desktop, the next Ctrl+Win+Right swaps to the other account, and it lands on that account's first pair.
-
-Things to know:
-
-- **A desktop belongs to one monitor.** In paired mode the windows on a monitor belong to the desktop that monitor is showing. A window you drag to the other monitor joins that monitor's desktop.
-- **You need at least as many desktops as monitors.** Otherwise OmniDesk tells you and stays off.
-- **Turning it off** (or unplugging a monitor) sends every window back to its own desktop without moving it on screen. Plugging the monitor back in resumes it.
-- **Windows that can't be moved.** Programs running as administrator, minimised windows and windows pinned to all desktops are left alone.
-- **Independent mode** (each monitor switches on its own) is planned and shown greyed out in the menu.
-
 ### Mouse buttons
 
 Extra mouse buttons can switch desktops too. Right-click the tray icon:
@@ -47,7 +35,7 @@ Extra mouse buttons can switch desktops too. Right-click the tray icon:
 - **Mouse buttons switch desktops** turns the feature on or off. It is on by default, with the Back side button going to the previous desktop and the Forward side button to the next.
 - **Choose mouse buttons...** opens a window where each of five buttons (middle click, side button 1 and 2, wheel tilt left and right) can be set to *Previous desktop*, *Next desktop* or *Do nothing*. Press **Detect a button...** and then the button you mean, and the window tells you which one it is.
 
-A mapped button does exactly what Ctrl+Win+Left/Right does: it moves the paired view in paired mode, swaps accounts past your last or first desktop, and otherwise switches desktop. While a button is mapped, other apps no longer see it, so Back and Forward stop working in browsers; turn the checkbox off to get them back. Left and right click cannot be mapped. Buttons that only exist through a mouse maker's own software are not seen by Windows as mouse buttons; map those to the keyboard shortcut in that software and OmniDesk reacts to the keys.
+A mapped button does exactly what Ctrl+Win+Left/Right does: it swaps accounts past your last or first desktop, and otherwise switches desktop. While a button is mapped, other apps no longer see it, so Back and Forward stop working in browsers; turn the checkbox off to get them back. Left and right click cannot be mapped. Buttons that only exist through a mouse maker's own software are not seen by Windows as mouse buttons; map those to the keyboard shortcut in that software and OmniDesk reacts to the keys.
 
 ## Use cases
 
@@ -123,20 +111,9 @@ Every few seconds the service checks each live session and starts an agent in an
 - leaves a session alone if its user chose Quit from the tray menu (the agent leaves a marker file that is cleared when the session signs out);
 - stops any agent still running from an older install folder copy, so after an update every account moves to the new version within seconds without signing out.
 
-### Paired desktops, technically
-
-Windows can show only one real desktop at a time, and its public API cannot move a window that belongs to another program. So paired mode uses one real desktop as a **stage**, always the leftmost desktop of the pair, and Windows' undocumented virtual-desktop interfaces (`IVirtualDesktopManagerInternal`, `IApplicationViewCollection`) to move windows on and off it.
-
-- **Nothing is stored.** A window on the stage that sits on monitor *m* belongs to desktop *S+m*, where *S* is the stage. The agent rebuilds that from where windows physically are, so a crash or restart cannot lose state, and the service simply restarts the agent.
-- **Moving the view** from S to S' works in three steps: windows that belong in the new view are moved onto the new stage and placed on their monitor while that stage is still off screen; the desktop is switched; windows left behind on the old stage go back to their own desktops. If the switch fails, the moves are undone.
-- **Placement** keeps each window's size (shrunk to fit) and the relative position of its centre on the monitor, so monitors of different sizes work. Maximised windows are restored, moved and maximised again. The agent is made per-monitor DPI-aware first, otherwise Windows scales the coordinates it sees on scaled displays.
-- **Safety gate.** These interfaces change between Windows builds. At start-up the agent reads the desktop count, every desktop id and the current desktop through them and compares each with the registry; if anything differs, paired mode is unavailable and the menu says so. Only the first seven entries of the interface are used.
-- **Resync.** Every half second the engine checks for a changed monitor count, desktop count or a desktop switched from outside (Task View, a touchpad swipe) and rebuilds the view.
-- **Threading.** The engine runs on its own single-threaded apartment so the COM objects are used from one thread, and the key hook only reads two flags and queues a request.
-
 ### Mouse buttons, technically
 
-A low-level mouse hook (`WH_MOUSE_LL`) reads the middle button, the two X buttons (side buttons, told apart by the high word of `mouseData`) and horizontal wheel movement (`WM_MOUSEHWHEEL`, the sign of the delta gives the direction). Because the hook is called for every mouse movement, it is installed only while the feature is on and at least one button is mapped (or the Detect helper is waiting), and its first act is to ignore everything except those five messages. A mapped press and its release are both swallowed, so applications never see half a click. A burst of wheel-tilt events within a quarter of a second counts as one. Events flagged as injected are ignored, so other tools' synthetic input cannot trigger it. The action runs on a worker thread through the same code as the keyboard shortcut path (edge check, swap, paired shift, or an injected Ctrl+Win+arrow). The mappings are stored per account under `HKCU\Software\OmniDesk` as `MouseEnabled`, `MouseMiddle`, `MouseSide1`, `MouseSide2`, `MouseTiltLeft` and `MouseTiltRight`, and the hook is re-installed with the keyboard hook every minute and after each unlock.
+A low-level mouse hook (`WH_MOUSE_LL`) reads the middle button, the two X buttons (side buttons, told apart by the high word of `mouseData`) and horizontal wheel movement (`WM_MOUSEHWHEEL`, the sign of the delta gives the direction). Because the hook is called for every mouse movement, it is installed only while the feature is on and at least one button is mapped (or the Detect helper is waiting), and its first act is to ignore everything except those five messages. A mapped press and its release are both swallowed, so applications never see half a click. A burst of wheel-tilt events within a quarter of a second counts as one. Events flagged as injected are ignored, so other tools' synthetic input cannot trigger it. The action runs on a worker thread through the same code as the keyboard shortcut path (edge check, then either a swap or an injected Ctrl+Win+arrow). The mappings are stored per account under `HKCU\Software\OmniDesk` as `MouseEnabled`, `MouseMiddle`, `MouseSide1`, `MouseSide2`, `MouseTiltLeft` and `MouseTiltRight`, and the hook is re-installed with the keyboard hook every minute and after each unlock.
 
 ### Keeping the key hook alive
 
@@ -166,8 +143,6 @@ src/Native.cs        Win32 declarations, session listing, shared helpers
 src/SwapService.cs   SYSTEM service: pipe server, session ring, swap
 src/Supervisor.cs    Service-side: keeps an agent running in every session
 src/Agent.cs         Per-account agent: key hook, edge check, tray, arrival
-src/PairedMode.cs    Paired-desktops engine (stage, moving the view)
-src/VirtualDesktops.cs  Wrapper over Windows' undocumented desktop interfaces, with the safety gate
 src/WinApi.cs        Window enumeration and placement
 src/MouseSettings.cs Mouse-button mappings and the "Choose mouse buttons" window
 src/Program.cs       Entry point and run modes
