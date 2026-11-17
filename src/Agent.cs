@@ -292,20 +292,22 @@ namespace OmniDesk
             }
 
             int dir = action == MouseSettings.Next ? 1 : -1;
-            ThreadPool.QueueUserWorkItem(delegate { SwitchBy(dir); });
+            bool ctrl = IsDown(VK_CONTROL);   // read now: the worker thread runs a moment later
+            ThreadPool.QueueUserWorkItem(delegate { SwitchBy(dir, ctrl); });
             return true;
         }
 
-        // Same behaviour as Ctrl+Win+Left/Right: swap accounts past the last/first desktop, otherwise switch desktop.
-        void SwitchBy(int dir)
+        // A plain press switches desktop and stops at the last/first one. Holding Ctrl at that edge
+        // swaps accounts, so a stray extra click can never throw you onto another user's lock screen.
+        void SwitchBy(int dir, bool ctrl)
         {
             try
             {
                 bool edge = AtEdge(dir);
-                Log("mouse switch, dir " + dir + (edge ? " (edge)" : ""));
+                Log("mouse switch, dir " + dir + (edge ? " (edge" + (ctrl ? ", ctrl)" : ")") : ""));
 
-                if (edge) Swap(dir);
-                else SendCombo(dir > 0 ? VK_RIGHT : VK_LEFT);
+                if (!edge) SendCombo(dir > 0 ? VK_RIGHT : VK_LEFT);
+                else if (ctrl) Swap(dir);
             }
             catch (Exception e)
             {
