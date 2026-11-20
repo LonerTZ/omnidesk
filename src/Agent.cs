@@ -108,9 +108,17 @@ namespace OmniDesk
         System.Windows.Forms.Timer _watchdog;
         bool _heldLeft, _heldRight;
         long _swallowedAt;
+        ToolStripMenuItem _clipItem;
+        FileSystemWatcher _clipWatch;
+        readonly object _clipLock = new object();
+        readonly System.Collections.Generic.HashSet<string> _clipDone = new System.Collections.Generic.HashSet<string>();
+        uint _clipBaseline;
+        IntPtr _clipOwner = IntPtr.Zero;
+        static Agent _instance;
 
         Agent()
         {
+            _instance = this;
             ShowInTaskbar = false;
             FormBorderStyle = FormBorderStyle.FixedToolWindow;
             WindowState = FormWindowState.Minimized;
@@ -127,10 +135,16 @@ namespace OmniDesk
             _mouseItem.CheckedChanged += delegate { MouseSettings.Enabled = _mouseItem.Checked; LoadMouse(); };
             var mouseChoose = new ToolStripMenuItem("Choose mouse buttons...", null, delegate { ChooseMouseButtons(); });
 
+            _clipItem = new ToolStripMenuItem("Share clipboard when swapping");
+            _clipItem.CheckOnClick = true;
+            _clipItem.Checked = ClipShareOn;
+            _clipItem.CheckedChanged += delegate { ClipShareOn = _clipItem.Checked; ApplyClipShare(_clipItem.Checked); };
+
             var menu = new ContextMenuStrip();
             menu.Items.Add(_mouseItem);
             menu.Items.Add(mouseChoose);
             menu.Items.Add(_arrivalItem);
+            menu.Items.Add(_clipItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Quit", null, delegate { Quit(); });
 
@@ -155,6 +169,8 @@ namespace OmniDesk
             _watchdog.Interval = 60 * 1000;
             _watchdog.Tick += delegate { InstallHook(); if (_mouseHook != IntPtr.Zero) InstallMouseHook(); };
             _watchdog.Start();
+
+            if (ClipShareOn) ApplyClipShare(true);
 
             LogAlways("agent started in session " + Process.GetCurrentProcess().SessionId);
         }
@@ -345,11 +361,15 @@ namespace OmniDesk
         protected override void OnHandleCreated(EventArgs e)
         {
             base.OnHandleCreated(e);
+            _clipOwner = Handle;
             Native.WTSRegisterSessionNotification(Handle, 0); // NOTIFY_FOR_THIS_SESSION
+            if (ClipShareOn) ThreadPool.QueueUserWorkItem(delegate { CheckIncoming(); });
         }
 
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
+            StopClipWatch();
+            ClipTransfer.SetOptIn(Process.GetCurrentProcess().SessionId, false);
             if (_watchdog != null) _watchdog.Stop();
             if (_hook != IntPtr.Zero) Native.UnhookWindowsHookEx(_hook);
             RemoveMouseHook();
@@ -507,7 +527,11 @@ namespace OmniDesk
                 }
                 Log("service replied: " + reply);
                 if (reply != null && reply.StartsWith("OK"))
+                {
+                    Agent self = _instance;
+                    if (self != null) self.ShareClipboardAfterSwap(); // starts on its own thread, the swap does not wait
                     Native.LockWorkStation(); // leave this session locked behind us
+                }
             }
             catch (Exception e)
             {
@@ -515,10 +539,159 @@ namespace OmniDesk
             }
         }
 
+        // ---- clipboard sharing ----
+
+        static bool ClipShareOn
+        {
+            get
+            {
+                try
+                {
+                    using (RegistryKey k = Registry.CurrentUser.OpenSubKey(SettingsKey))
+                        return k != null && Convert.ToInt32(k.GetValue("ClipboardShare", 0)) != 0; // off unless the user turned it on
+                }
+                catch { return false; }
+            }
+            set
+            {
+                try
+                {
+                    using (RegistryKey k = Registry.CurrentUser.CreateSubKey(SettingsKey))
+                        k.SetValue("ClipboardShare", value ? 1 : 0, RegistryValueKind.DWord);
+                }
+                catch { }
+            }
+        }
+
+        void ApplyClipShare(bool on)
+        {
+            ClipTransfer.SetOptIn(Process.GetCurrentProcess().SessionId, on);
+            if (on)
+            {
+                _clipBaseline = ClipTransfer.SequenceNumber();
+                StartClipWatch();
+                ThreadPool.QueueUserWorkItem(delegate { CheckIncoming(); });
+            }
+            else
+            {
+                StopClipWatch();
+            }
+        }
+
+        void StartClipWatch()
+        {
+            try
+            {
+                ClipTransfer.EnsureRoot();
+                StopClipWatch();
+                var w = new FileSystemWatcher(ClipTransfer.Root, "manifest.txt");
+                w.IncludeSubdirectories = true;
+                w.NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.CreationTime;
+                FileSystemEventHandler changed = delegate { ThreadPool.QueueUserWorkItem(delegate { CheckIncoming(); }); };
+                w.Created += changed;
+                w.Changed += changed;
+                w.Renamed += delegate { ThreadPool.QueueUserWorkItem(delegate { CheckIncoming(); }); };
+                w.EnableRaisingEvents = true;
+                _clipWatch = w;
+            }
+            catch (Exception e)
+            {
+                LogAlways("clipboard watcher failed: " + e.Message);
+            }
+        }
+
+        void StopClipWatch()
+        {
+            FileSystemWatcher w = _clipWatch;
+            _clipWatch = null;
+            if (w != null) { try { w.EnableRaisingEvents = false; w.Dispose(); } catch { } }
+        }
+
+        // Called as a swap goes ahead. Only sends if something new was copied since this session last looked.
+        void ShareClipboardAfterSwap()
+        {
+            try
+            {
+                if (!ClipShareOn) return;
+                uint seq = ClipTransfer.SequenceNumber();
+                if (seq == _clipBaseline) { Log("clipboard unchanged, nothing to share"); return; }
+                int session = Process.GetCurrentProcess().SessionId;
+                string user = Environment.UserName;
+                ThreadPool.QueueUserWorkItem(delegate
+                {
+                    try
+                    {
+                        if (ClipTransfer.SendToOthers(session, user))
+                        {
+                            _clipBaseline = seq;
+                            LogAlways("clipboard shared");
+                        }
+                        else Log("clipboard not shared (nothing to send or nobody opted in)");
+                    }
+                    catch (Exception e)
+                    {
+                        LogAlways("clipboard share failed: " + e.Message);
+                    }
+                });
+            }
+            catch (Exception e)
+            {
+                LogAlways("clipboard share failed: " + e.Message);
+            }
+        }
+
+        // Applies transfers from other accounts, oldest first so the newest ends up on the clipboard.
+        void CheckIncoming()
+        {
+            try
+            {
+                if (!ClipShareOn || _clipOwner == IntPtr.Zero) return; // the window must exist to own the clipboard
+                int self = Process.GetCurrentProcess().SessionId;
+                lock (_clipLock)
+                {
+                    foreach (string dir in ClipTransfer.Ready())
+                    {
+                        if (_clipDone.Contains(dir)) continue;
+                        int from;
+                        string user;
+                        DateTime created;
+                        if (!ClipTransfer.Peek(dir, out from, out user, out created)) continue; // not readable yet, or not for us
+                        _clipDone.Add(dir);
+                        if (from == self) continue;
+                        if (DateTime.UtcNow - created > ClipTransfer.Ttl) { Log("clipboard transfer expired"); continue; }
+
+                        uint seq = ClipTransfer.Apply(dir, _clipOwner);
+                        if (seq == 0) { LogAlways("could not apply clipboard from " + user); continue; }
+                        _clipBaseline = seq; // what we just received is not ours to send back
+                        LogAlways("clipboard received from " + user);
+                        string who = user;
+                        try
+                        {
+                            BeginInvoke(new Action(delegate
+                            {
+                                _tray.ShowBalloonTip(4000, "OmniDesk", "Clipboard received from " + who, ToolTipIcon.Info);
+                            }));
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                LogAlways("clipboard receive failed: " + e.Message);
+            }
+        }
+
         // ---- arrival ----
 
         void OnUnlock()
         {
+            if (ClipShareOn)
+            {
+                _clipBaseline = ClipTransfer.SequenceNumber(); // what is on the clipboard now counts as already seen
+                ThreadPool.QueueUserWorkItem(delegate { CheckIncoming(); });
+            }
+
             int sid = Process.GetCurrentProcess().SessionId;
             string f = Shared.ArrivalFile(sid);
             string text;

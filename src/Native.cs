@@ -179,6 +179,7 @@ namespace OmniDesk
         public int Id;
         public int State;
         public string User;
+        public string Domain;
     }
 
     static class Sessions
@@ -203,9 +204,10 @@ namespace OmniDesk
                         new IntPtr(p.ToInt64() + (long)i * size), typeof(Native.WTS_SESSION_INFO));
                     if (info.SessionId == 0) continue;
                     if (info.State != StateActive && info.State != StateDisconnected) continue;
-                    string user = QueryUser(info.SessionId);
+                    string user = QueryString(info.SessionId, 5);   // WTSUserName
                     if (string.IsNullOrEmpty(user)) continue;
-                    list.Add(new SessionInfo { Id = info.SessionId, State = info.State, User = user });
+                    string domain = QueryString(info.SessionId, 7); // WTSDomainName
+                    list.Add(new SessionInfo { Id = info.SessionId, State = info.State, User = user, Domain = domain });
                 }
             }
             finally
@@ -216,12 +218,11 @@ namespace OmniDesk
             return list;
         }
 
-        static string QueryUser(int sessionId)
+        static string QueryString(int sessionId, int infoClass)
         {
             IntPtr buf;
             int bytes;
-            const int WTSUserName = 5;
-            if (!Native.WTSQuerySessionInformation(IntPtr.Zero, sessionId, WTSUserName, out buf, out bytes))
+            if (!Native.WTSQuerySessionInformation(IntPtr.Zero, sessionId, infoClass, out buf, out bytes))
                 return null;
             try { return Marshal.PtrToStringUni(buf); }
             finally { Native.WTSFreeMemory(buf); }

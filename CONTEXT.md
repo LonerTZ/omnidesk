@@ -35,3 +35,7 @@ _Avoid_: Client, tray app
 **Service**:
 The privileged helper that performs the Swap on behalf of an Agent, and keeps an Agent running in every Session.
 _Avoid_: Daemon, backend
+
+**Clipboard transfer**:
+The copy of one Session's clipboard that travels, at a Swap, to every other Session that has clipboard sharing on. It lives for five minutes in a private folder and is then dropped.
+_Avoid_: Clipboard sync (nothing is kept in step; it is a one-off hand-over at each Swap)

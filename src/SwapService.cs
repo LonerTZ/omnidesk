@@ -19,6 +19,7 @@ namespace OmniDesk
 
         Thread _thread;
         Supervisor _supervisor;
+        System.Threading.Timer _clipSweep;
         volatile bool _stop;
         DateTime _lastSwap = DateTime.MinValue;
 
@@ -36,6 +37,9 @@ namespace OmniDesk
                 Shared.Log(LogPath, "unhandled exception: " + e.ExceptionObject);
             };
             Shared.Log(LogPath, "service started");
+            try { ClipTransfer.EnsureRoot(); } catch (Exception e) { Shared.Log(LogPath, "clip folder failed: " + e.Message); }
+            // Shared clipboard folders are removed once they are older than the time limit.
+            _clipSweep = new System.Threading.Timer(delegate { ClipTransfer.Sweep(); }, null, 30000, 30000);
             _thread = new Thread(Loop) { IsBackground = true };
             _thread.Start();
             _supervisor = new Supervisor();
@@ -45,6 +49,7 @@ namespace OmniDesk
         protected override void OnStop()
         {
             _stop = true;
+            if (_clipSweep != null) _clipSweep.Dispose();
             if (_supervisor != null) _supervisor.Stop();
             try
             {

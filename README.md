@@ -37,7 +37,16 @@ Extra mouse buttons can switch desktops too. Right-click the tray icon:
 
 A mapped button switches desktop, and stops at your last or first desktop. To swap accounts from there, hold **Ctrl** while you press the button, so a stray extra click never throws you onto another account's lock screen. (The keyboard shortcut Ctrl+Win+Left/Right still swaps at the edge on its own.) While a button is mapped, other apps no longer see it, so Back and Forward stop working in browsers; turn the checkbox off to get them back. Left and right click cannot be mapped. Buttons that only exist through a mouse maker's own software are not seen by Windows as mouse buttons; map those to the keyboard shortcut in that software and OmniDesk reacts to the keys.
 
-## Use cases
+### Share clipboard when swapping
+
+Off by default. Tick **Share clipboard when swapping** in the tray menu of each account that should take part. When you swap, anything you copied since you arrived in the account you are leaving (text, pictures, formatted text, copied files and folders, with no size limit) is put on the clipboard of every other account that has the box ticked, so you can swap and paste. A short notice in the tray tells you when it arrives.
+
+- The swap never waits for the copy. A big file shows up in the other clipboard when it has finished copying.
+- Copied files are copied to a private folder under `%ProgramData%\OmniDesk\clip`, because the other account usually cannot read yours. The paste uses those copies.
+- Everything is dropped after **5 minutes**: an unclaimed transfer is ignored, and the folder and the file copies are deleted.
+- If you swap without copying anything new, the other accounts keep their own clipboards.
+- Passwords copied from a password manager are carried like anything else, so for a short time they sit in that private folder, readable only by you and the accounts that take part (and administrators).
+
 
 - **Work and personal on one PC.** Keep a work profile (work email, VPN, company apps) and a personal one signed in together, and flip between them without sign-out or session loss.
 - **Shared family computer.** Each person keeps their own windows and games open, and swapping between users takes one keypress instead of a trip through the lock screen.
@@ -115,6 +124,14 @@ Every few seconds the service checks each live session and starts an agent in an
 
 A low-level mouse hook (`WH_MOUSE_LL`) reads the middle button, the two X buttons (side buttons, told apart by the high word of `mouseData`) and horizontal wheel movement (`WM_MOUSEHWHEEL`, the sign of the delta gives the direction). Because the hook is called for every mouse movement, it is installed only while the feature is on and at least one button is mapped (or the Detect helper is waiting), and its first act is to ignore everything except those five messages. A mapped press and its release are both swallowed, so applications never see half a click. A burst of wheel-tilt events within a quarter of a second counts as one. Events flagged as injected are ignored, so other tools' synthetic input cannot trigger it. The action runs on a worker thread through the same edge check as the keyboard shortcut: not at an edge it injects Ctrl+Win+arrow; at an edge it swaps only if Ctrl was physically down when the button was pressed (read with `GetAsyncKeyState` before the worker thread starts), and otherwise does nothing. The mappings are stored per account under `HKCU\Software\OmniDesk` as `MouseEnabled`, `MouseMiddle`, `MouseSide1`, `MouseSide2`, `MouseTiltLeft` and `MouseTiltRight`, and the hook is re-installed with the keyboard hook every minute and after each unlock.
 
+### Clipboard sharing, technically
+
+Each session has its own clipboard, so nothing is shared by itself. An agent whose user ticked the option writes `clip-optin-<session>.txt` (its process id) in `%ProgramData%\OmniDesk` and watches `%ProgramData%\OmniDesk\clip` with a `FileSystemWatcher`. When the service has granted a swap, the sending agent compares `GetClipboardSequenceNumber` with the value it saw at its last unlock, at start, or after the last clipboard it applied. If it is unchanged, nothing is sent. Otherwise a worker thread finds the other live sessions whose opt-in note names a running OmniDesk process in that session, turns each session's WTS user and domain into a SID, and calls `ClipTransfer.Capture`.
+
+`Capture` walks `EnumClipboardFormats` and copies every format held in global memory: graphics handles (bitmap, metafiles, palette) and the private and GDI ranges are skipped, as are formats that only make sense inside the program that created them (OLE and shell internals such as `Shell IDList Array` and `FileContents`). Delayed-rendering formats are rendered by the owner at that moment. Registered formats are stored by name, because their numbers differ between sessions. For `CF_HDROP` each listed file or folder is copied into `files\<n>\` and the list is rewritten to point at the copies; `Preferred DropEffect` is forced to *copy* so a cut cannot try to move files out of the transfer folder. The folder is created with an ACL that drops inheritance and allows only SYSTEM, administrators, the sender and the recipients' SIDs, and the manifest is written last as `manifest.tmp` and renamed, so a receiver never sees half a transfer.
+
+A receiving agent reads the manifest header, ignores its own sessions' transfers and anything older than five minutes, and applies the formats with `EmptyClipboard` and `SetClipboardData` (its hidden window owns the clipboard), oldest transfer first. It then records the new sequence number so what it received is not sent back, and shows a tray notice. The service sweeps `clip` every 30 seconds and deletes folders older than five minutes, and the sender also removes its own folder when the time is up.
+
 ### Keeping the key hook alive
 
 Windows removes a low-level keyboard hook, with no error, if its callback is ever too slow. The agent keeps the callback minimal (it reads two integers and returns for every key except Left and Right), warms up the registry and marshalling code at start, runs at above-normal priority, and re-installs the hook every minute and after each unlock or console reconnect. Exceptions are caught inside the callback so a failure passes the key through instead of ending the process. The agent writes lifecycle events and errors to `%LOCALAPPDATA%\OmniDesk\agent.log` (per-key detail only with `--debug`), and the service logs to `%ProgramData%\OmniDesk\service.log`.
@@ -129,6 +146,7 @@ Windows removes a low-level keyboard hook, with no error, if its callback is eve
 - The service accepts requests only from the console session and acts only on existing sessions.
 - If a session was left **unlocked** while disconnected (for example by closing a remote desktop connection), swapping to it shows it as it was, with no lock screen in between. Sessions this app leaves are locked first.
 - Any local user can write the arrival note for a session. The worst effect is that a session's virtual desktop moves.
+- Clipboard sharing moves data from one account to another on purpose. Keep it off in an account you do not want clipboard contents to leave or enter. A shared clipboard sits on disk for up to five minutes in a folder only the taking-part accounts can read.
 
 ### Known limitations
 
@@ -144,6 +162,7 @@ src/SwapService.cs   SYSTEM service: pipe server, session ring, swap
 src/Supervisor.cs    Service-side: keeps an agent running in every session
 src/Agent.cs         Per-account agent: key hook, edge check, tray, arrival
 src/WinApi.cs        Window enumeration and placement
+src/ClipTransfer.cs  Clipboard sharing: capture, private transfer folder, apply
 src/MouseSettings.cs Mouse-button mappings and the "Choose mouse buttons" window
 src/Program.cs       Entry point and run modes
 setup/Setup.cs       Self-contained installer and uninstaller
