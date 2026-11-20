@@ -15,7 +15,7 @@ namespace OmniDeskSetup
     static class Setup
     {
         const string Product = "OmniDesk";
-        const string Version = "1.1.1";
+        const string Version = "1.2.0";
         const string ServiceName = "OmniDeskSvc";
         const string RunKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
         const string UninstallKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\OmniDesk";
